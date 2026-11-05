@@ -5,25 +5,43 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
+
 const db = require("./config/db");
 const messageController = require("./controllers/messageController");
 
 const app = express();
-const frontendOrigin = process.env.FRONTEND_ORIGIN || true;
+const server = http.createServer(app);
 
-app.use(cors({ origin: frontendOrigin }));
+const PORT = Number(process.env.PORT) || 5000;
+const allowedOrigins = (process.env.FRONTEND_ORIGIN ||
+  "http://127.0.0.1:5500,http://localhost:5500")
+  .split(",")
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow requests without an Origin header (e.g. curl/Postman).
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked this origin: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "20kb" }));
 
 app.get("/api/health", async (req, res) => {
   try {
     await db.query("SELECT 1");
-    res.json({
+    return res.status(200).json({
       success: true,
       message: "Group Chat API, MySQL and Socket.IO server are connected."
     });
   } catch (error) {
     console.error("Health check error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "API is running, but MySQL is unavailable."
     });
@@ -32,17 +50,26 @@ app.get("/api/health", async (req, res) => {
 
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/messages", require("./routes/messageRoutes"));
-app.use((req, res) => res.status(404).json({ success: false, message: "Route not found." }));
 
-const server = http.createServer(app);
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: "Route not found." });
+});
+
+app.use((error, req, res, next) => {
+  console.error("Request error:", error.message);
+  if (res.headersSent) return next(error);
+  res.status(500).json({ success: false, message: "Internal server error." });
+});
+
 const io = new Server(server, {
   cors: {
-    origin: frontendOrigin,
-    methods: ["GET", "POST"]
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"]
   }
 });
 
-// Verify the JWT during the Socket.IO handshake.
+// Authenticate every Socket.IO connection using the JWT returned by /api/auth/login.
 io.use((socket, next) => {
   try {
     const token = socket.handshake.auth && socket.handshake.auth.token;
@@ -51,7 +78,9 @@ io.use((socket, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded || !decoded.id) return next(new Error("Invalid authentication token."));
+    if (!decoded || !decoded.id) {
+      return next(new Error("Invalid authentication token."));
+    }
 
     socket.user = decoded;
     return next();
@@ -60,10 +89,11 @@ io.use((socket, next) => {
   }
 });
 
-// All connected clients receive the saved message after the database insert succeeds.
 function broadcastMessage(message) {
   io.emit("new_message", message);
-  console.log(`Broadcast message ${message.id} to ${io.engine.clientsCount} connected client(s).`);
+  console.log(
+    `Broadcast message ${message.id} to ${io.engine.clientsCount} connected client(s).`
+  );
 }
 
 app.set("broadcastMessage", broadcastMessage);
@@ -76,7 +106,6 @@ io.on("connection", socket => {
     message: "Live chat connection established."
   });
 
-  // Client sends: socket.emit("send_message", { message }, acknowledgementCallback)
   socket.on("send_message", async (payload, acknowledge) => {
     const reply = typeof acknowledge === "function" ? acknowledge : () => {};
 
@@ -93,6 +122,7 @@ io.on("connection", socket => {
         data: savedMessage
       });
     } catch (error) {
+      console.error("Socket send_message error:", error);
       reply({
         success: false,
         message: error.status ? error.message : "Unable to send message."
@@ -101,24 +131,26 @@ io.on("connection", socket => {
   });
 
   socket.on("disconnect", reason => {
-    console.log(`Socket.IO client disconnected (user ${socket.user.id}): ${reason}`);
-  });
-
-  socket.on("error", error => {
-    console.error("Socket.IO client error:", error.message);
+    console.log(`Socket disconnected (user ${socket.user.id}): ${reason}`);
   });
 });
 
-const PORT = Number(process.env.PORT) || 3000;
 server.listen(PORT, () => {
-  console.log(`Group Chat API running at http://localhost:${PORT}`);
-  console.log(`Socket.IO server running at http://localhost:${PORT}`);
+  console.log(`Group Chat API running at http://127.0.0.1:${PORT}`);
+  console.log(`Socket.IO server running at http://127.0.0.1:${PORT}`);
+  console.log(`Allowed frontend origins: ${allowedOrigins.join(", ")}`);
 });
 
+let isShuttingDown = false;
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log("\nShutting down server...");
   io.close(async () => {
     try {
       await db.end();
+    } catch (error) {
+      console.error("Error closing MySQL pool:", error);
     } finally {
       process.exit(0);
     }
