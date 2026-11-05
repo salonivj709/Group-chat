@@ -70,21 +70,35 @@ const io = new Server(server, {
 });
 
 // Authenticate every Socket.IO connection using the JWT returned by /api/auth/login.
+// The client sends it as: io(SOCKET_URL, { auth: { token } }).
 io.use((socket, next) => {
   try {
-    const token = socket.handshake.auth && socket.handshake.auth.token;
-    if (!token || !process.env.JWT_SECRET) {
-      return next(new Error("Authentication required."));
+    const token = socket.handshake.auth?.token;
+
+    if (!token) {
+      return next(new Error("Authentication token required."));
+    }
+
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET is missing from backend/.env");
+      return next(new Error("Server authentication is not configured."));
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
     if (!decoded || !decoded.id) {
       return next(new Error("Invalid authentication token."));
     }
 
-    socket.user = decoded;
+    // Store the authenticated identity on Socket.IO's supported data object.
+    socket.data.user = {
+      id: decoded.id,
+      email: decoded.email || null
+    };
+
     return next();
   } catch (error) {
+    console.error("Socket authentication failed:", error.message);
     return next(new Error("Invalid or expired token."));
   }
 });
@@ -99,7 +113,7 @@ function broadcastMessage(message) {
 app.set("broadcastMessage", broadcastMessage);
 
 io.on("connection", socket => {
-  console.log(`Authenticated Socket.IO client connected (user ${socket.user.id}).`);
+  console.log(`Authenticated Socket.IO client connected (user ${socket.data.user.id}).`);
 
   socket.emit("connection_status", {
     success: true,
@@ -111,7 +125,7 @@ io.on("connection", socket => {
 
     try {
       const savedMessage = await messageController.saveMessage(
-        socket.user.id,
+        socket.data.user.id,
         payload && payload.message
       );
 
@@ -131,7 +145,7 @@ io.on("connection", socket => {
   });
 
   socket.on("disconnect", reason => {
-    console.log(`Socket disconnected (user ${socket.user.id}): ${reason}`);
+    console.log(`Socket disconnected (user ${socket.data.user.id}): ${reason}`);
   });
 });
 
