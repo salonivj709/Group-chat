@@ -1,8 +1,21 @@
 const db = require("../config/db");
 
+const crypto = require("crypto");
+
 function getPrivateRoomId(userA, userB) {
-  const ids = [Number(userA), Number(userB)].sort((a, b) => a - b);
-  return `private_${ids[0]}_${ids[1]}`;
+  const identifiers = [
+    String(userA).trim().toLowerCase(),
+    String(userB).trim().toLowerCase()
+  ].sort();
+
+  const combinedId = identifiers.join("::");
+
+  const hash = crypto
+    .createHash("sha256")
+    .update(combinedId)
+    .digest("hex");
+
+  return `private_${hash}`;
 }
 
 module.exports = function registerPersonalChatHandlers(io, socket) {
