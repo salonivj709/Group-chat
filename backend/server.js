@@ -8,6 +8,7 @@ const { Server } = require("socket.io");
 
 const db = require("./config/db");
 const messageController = require("./controllers/messageController");
+const registerPersonalChatHandlers = require("./handlers/personalChat");
 
 const app = express();
 const server = http.createServer(app);
@@ -113,6 +114,7 @@ function broadcastMessage(message) {
 app.set("broadcastMessage", broadcastMessage);
 
 io.on("connection", socket => {
+  registerPersonalChatHandlers(io, socket);
   console.log(`Authenticated Socket.IO client connected (user ${socket.data.user.id}).`);
 
   socket.emit("connection_status", {
