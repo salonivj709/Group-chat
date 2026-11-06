@@ -14,6 +14,12 @@ const app = express();
 const server = http.createServer(app);
 
 const PORT = Number(process.env.PORT) || 5000;
+const requiredEnvironment = ["DB_HOST", "DB_USER", "DB_NAME", "JWT_SECRET"];
+const missingEnvironment = requiredEnvironment.filter(key => !process.env[key]);
+if (missingEnvironment.length) {
+  console.error(`Missing required environment variable(s): ${missingEnvironment.join(", ")}`);
+  process.exit(1);
+}
 const allowedOrigins = (process.env.FRONTEND_ORIGIN ||
   "http://127.0.0.1:5500,http://localhost:5500")
   .split(",")
@@ -51,6 +57,7 @@ app.get("/api/health", async (req, res) => {
 
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/messages", require("./routes/messageRoutes"));
+app.use("/api/users", require("./routes/userRoutes"));
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: "Route not found." });
